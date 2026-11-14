@@ -3751,7 +3751,7 @@ function cloudLoadSession() { try { return JSON.parse(localStorage.getItem(LS_CL
 function cloudSaveSession(s) {
   cloud.session = s;
   if (s) tryWrite(LS_CLOUD, JSON.stringify(s)); else { try { localStorage.removeItem(LS_CLOUD); } catch (e) {} cloud.ready = false; }
-  renderCloudChip();
+  renderCloudChip(); renderSaveChip();
 }
 function cloudAuth(path, body, token) {
   var h = { apikey: CLOUD.key, 'Content-Type': 'application/json' }; if (token) h.Authorization = 'Bearer ' + token;
@@ -4009,6 +4009,8 @@ function setFileState(s) { state.fileState = s; renderSaveChip(); renderBanners(
 function renderSaveChip() {
   var chip = $('#saveChip'), txt = $('#saveChipText'), s = state.fileState;
   chip.className = 'savechip';
+  // no file auto-save in this browser (iPhone), but signed in: the cloud copy is the backup — the ☁ button says so
+  chip.hidden = !state.saveFailed && s === 'unsupported' && !!cloud.session;
   if (state.saveFailed) { chip.classList.add('bad'); txt.textContent = 'Save failed — Backup now'; return; }
   if (s === 'ok') { chip.classList.add('ok'); txt.textContent = 'Saved ' + state.lastFileSave.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); chip.title = 'Auto-saving to ' + (state.fileHandle && state.fileHandle.name); }
   else if (s === 'fail') { chip.classList.add('bad'); txt.textContent = 'Auto-save failed'; chip.title = state.fileErr + ' — click to retry'; }
@@ -6508,7 +6510,7 @@ function boot() {
   state.bets = [];
   if (!fsSupported) state.fileState = 'unsupported';
   cloud.session = cloudLoadSession();
-  renderCloudChip();
+  renderCloudChip(); renderSaveChip();
   loadBetsBest().then(function (bets) {
     state.bets = bets; state.loaded = true;
     canonicalise();
