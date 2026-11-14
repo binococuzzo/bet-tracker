@@ -3751,7 +3751,7 @@ function cloudLoadSession() { try { return JSON.parse(localStorage.getItem(LS_CL
 function cloudSaveSession(s) {
   cloud.session = s;
   if (s) tryWrite(LS_CLOUD, JSON.stringify(s)); else { try { localStorage.removeItem(LS_CLOUD); } catch (e) {} cloud.ready = false; }
-  renderCloudChip(); renderSaveChip();
+  renderCloudChip(); renderSaveChip(); if (state.loaded) renderBanners();
 }
 function cloudAuth(path, body, token) {
   var h = { apikey: CLOUD.key, 'Content-Type': 'application/json' }; if (token) h.Authorization = 'Bearer ' + token;
@@ -5297,7 +5297,7 @@ function renderBanners() {
     h += '<div class="banner info"><span class="grow"><b>Protect your bets:</b> link an auto-save file once. Every change then also goes to a real file on your computer, so clearing browser data can\'t wipe your history.</span><button class="btn primary" data-act="link">Link auto-save file</button><button class="btn ghost" data-act="dismiss-link">Not now</button></div>';
   if (state.fileState === 'perm' && !state.dismissed.perm)
     h += '<div class="banner warn"><span class="grow">Auto-save is paused until you give the browser permission again (it asks after every restart).</span><button class="btn primary" data-act="resume">Resume auto-save</button><button class="btn ghost" data-act="dismiss-perm">Not now</button></div>';
-  if (state.fileState === 'unsupported' && state.bets.length && !state.dismissed.unsup)
+  if (state.fileState === 'unsupported' && state.bets.length && !state.dismissed.unsup && !cloud.session)   // signed in: the cloud copy is the backup
     h += '<div class="banner warn"><span class="grow">This browser can\'t auto-save to a file. Open the tracker in <b>Chrome or Edge</b> for auto-save — or press <b>Backup</b> at the end of each session.</span><button class="btn ghost" data-act="dismiss-unsup">OK</button></div>';
   var caps = capAlerts();
   var ckey = caps.map(function (c) { return c.id + ':' + Math.round(c.worst); }).join('|');
