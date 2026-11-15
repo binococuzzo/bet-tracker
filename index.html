@@ -3213,7 +3213,8 @@ function positionKey(b) {
 }
 // profit by day for the P&L chart: every calendar day from the first settled bet's day to the last
 // (days without a result are 0, so the line is drawn to time), with the running total
-function dailyPnl(bets) {
+// extra: [{day, net}] — whole-day results from before the tracker (no bets behind them); marked hist on the row
+function dailyPnl(bets, extra) {
   var by = {};
   bets.forEach(function (b) {
     if (b.reconstructed || b.example || !isSettled(b)) return;
@@ -3221,13 +3222,18 @@ function dailyPnl(bets) {
     var r = by[d] = by[d] || { net: 0, n: 0, staked: 0 };
     r.net += profitOf(b); r.n++; r.staked += stakeOf(b);
   });
+  (extra || []).forEach(function (x) {
+    if (!x || !x.day || !isFinite(+x.net)) return;
+    var r = by[x.day] = by[x.day] || { net: 0, n: 0, staked: 0 };
+    r.net += +x.net; r.hist = true;
+  });
   var days = Object.keys(by).sort();
   if (!days.length) return [];
   var out = [], cum = 0, d = days[0], last = days[days.length - 1];
   while (d <= last) {
     var r = by[d] || { net: 0, n: 0, staked: 0 };
     cum += r.net;
-    out.push({ day: d, net: round2(r.net), n: r.n, staked: round2(r.staked), cum: round2(cum) });
+    out.push({ day: d, net: round2(r.net), n: r.n, staked: round2(r.staked), cum: round2(cum), hist: !!r.hist });
     var x = new Date(d + 'T12:00:00Z'); x.setUTCDate(x.getUTCDate() + 1); d = x.toISOString().slice(0, 10);
   }
   return out;
@@ -5668,11 +5674,45 @@ function pnlStart(p) {
   var today = localYmd();
   return p === '30d' ? P.addDays(today, -29) : p === '90d' ? P.addDays(today, -89) : p === 'mtd' ? today.slice(0, 8) + '01' : p === 'ytd' ? today.slice(0, 5) + '01-01' : '';
 }
+/* Daily results from before the tracker (the user's other app, 2026-11-14): settings.history = [{day, net}] in CAD.
+   Used only for days before the tracker's own first bet day (the tracker's bets win from then on), and only
+   when no league / tipster / book / bet type / ticket / search filter is on — a day's total can't be split. */
+function historyCutoff() {
+  var first = '';
+  state.bets.forEach(function (b) { if (b.example) return; var d = G.betDay(b); if (d && (!first || d < first)) first = d; });
+  return first;
+}
+function historyDays() {
+  var h = state.settings.history; if (!Array.isArray(h) || !h.length) return [];
+  var cut = historyCutoff();
+  return h.filter(function (r) { return r && r.day && isFinite(+r.net) && (!cut || r.day < cut); });
+}
+function filtersPlain() {
+  var f = state.filters;
+  return (f.status === 'all' || f.status === 'settled') && !f.sport && !f.book && !f.source && !f.market && !f.ticket && !f.q.trim();
+}
+function historyIn(from, to) {
+  if (!filtersPlain()) return [];
+  return historyDays().filter(function (r) { return (!from || r.day >= from) && (!to || r.day <= to); });
+}
+// the Analysis period as a [from, to] day range ('' = open)
+function periodBounds() {
+  var p = state.filters.period, today = localYmd();
+  if (p === 'today') return [today, today];
+  if (p === 'yesterday') { var y = P.addDays(today, -1); return [y, y]; }
+  if (p === '7d') return [P.addDays(today, -6), ''];
+  if (p === '14d') return [P.addDays(today, -13), ''];
+  if (p === '30d') return [P.addDays(today, -29), ''];
+  if (p === 'month') return [today.slice(0, 8) + '01', ''];
+  if (p === 'year') return [today.slice(0, 5) + '01-01', today.slice(0, 5) + '12-31'];
+  if (p === 'range') { var a = state.filters.from || '', b = state.filters.to || ''; if (a && b && a > b) { var x = a; a = b; b = x; } return [a, b]; }
+  return ['', ''];
+}
 function renderPnl() {
   var el = $('#anChart'); if (!el) return;
   var start = pnlStart(pnlUi.period);
   var list = filteredBets({ anyPeriod: true }).filter(function (b) { var d = G.betDay(b); return !start || (d && d >= start); });
-  var rows = pnlRows = G.dailyPnl(list);
+  var rows = pnlRows = G.dailyPnl(list, historyIn(start, ''));
   var seg = '<div class="seg pnl-seg" id="pnlSeg">' + PNL_PERIODS.map(function (p) { return '<button data-p="' + p[0] + '" class="' + (pnlUi.period === p[0] ? 'on' : '') + '">' + p[1] + '</button>'; }).join('') + '</div>';
   if (!rows.length) {
     el.innerHTML = '<div class="pnl-head"><h3>Profit over time</h3>' + seg + '</div><div class="pnl-empty">No settled bets for this period and these filters yet. The chart fills in as bets are graded.</div>';
@@ -5741,9 +5781,10 @@ function renderPnl() {
     $('#pnlX').setAttribute('x1', X); $('#pnlX').setAttribute('x2', X); $('#pnlX').setAttribute('visibility', 'visible');
     $('#pnlDot').setAttribute('cx', X); $('#pnlDot').setAttribute('cy', y1(r.cum)); $('#pnlDot').setAttribute('visibility', 'visible');
     tip.innerHTML = '<div class="t">' + esc(fmtDay(r.day)) + '</div>' +
-      '<div class="r"><span>That day</span><b class="' + cls(r.net) + '">' + (r.n ? fmtMoney(r.net, { sign: 1 }) : '—') + '</b></div>' +
+      '<div class="r"><span>That day</span><b class="' + cls(r.net) + '">' + (r.n || r.hist ? fmtMoney(r.net, { sign: 1 }) : '—') + '</b></div>' +
       '<div class="r"><span>Running total</span><b class="' + cls(r.cum) + '">' + fmtMoney(r.cum, { sign: 1 }) + '</b></div>' +
-      '<div class="r"><span>Bets settled</span><b>' + r.n + (r.n ? ' · ' + fmtMoney(r.staked) + ' risked' : '') + '</b></div>';
+      (r.hist ? '<div class="r"><span>From</span><b>your daily results</b></div>'
+        : '<div class="r"><span>Bets settled</span><b>' + r.n + (r.n ? ' · ' + fmtMoney(r.staked) + ' risked' : '') + '</b></div>');
     tip.hidden = false;
     var px = X * b.width / W + 16, wrap = el.getBoundingClientRect();
     var left = (b.left - wrap.left) + px; if (left + tip.offsetWidth > wrap.width - 8) left = (b.left - wrap.left) + px - tip.offsetWidth - 32;
@@ -5765,10 +5806,14 @@ function renderAnalysis(list) {
   renderPnl();
   var s = G.summarize(list, null).total, pr = G.playRecord(list);
   var vol = 0; list.forEach(function (b) { vol += G.stakeOf(b); });
+  // daily results from before the tracker count in the money total only (no stakes or bets behind them)
+  var pb = periodBounds(), hist = historyIn(pb[0], pb[1]), hNet = 0; hist.forEach(function (r) { hNet += +r.net; });
+  var netAll = Math.round((s.profit + hNet) * 100) / 100;
+  var netNote = hist.length ? 'includes ' + fmtMoney(hNet, { sign: 1 }) + ' from your daily results before ' + new Date(historyCutoff() + 'T12:00:00').toLocaleDateString([], { month: 'short', day: 'numeric' }) : 'settled bets only';
   $('#anSum').innerHTML =
     '<div><div class="v">' + fmtMoney(vol) + '</div><div class="k">Volume wagered</div><div class="s">' + fmtMoney(s.settled) + ' settled' + (s.pendingN ? ' · ' + fmtMoney(s.pending) + ' open' : '') + '</div></div>' +
-    '<div><div class="v ' + cls(s.profit) + '">' + fmtMoney(s.profit, { sign: 1 }) + '</div><div class="k">Net profit</div><div class="s">settled bets only</div></div>' +
-    '<div><div class="v ' + cls(s.profit) + '">' + fmtPct(s.roi) + '</div><div class="k">ROI</div><div class="s">profit ÷ settled</div></div>' +
+    '<div><div class="v ' + cls(netAll) + '">' + fmtMoney(netAll, { sign: 1 }) + '</div><div class="k">Net profit</div><div class="s">' + esc(netNote) + '</div></div>' +
+    '<div><div class="v ' + cls(s.profit) + '">' + fmtPct(s.roi) + '</div><div class="k">ROI</div><div class="s">' + (hist.length ? 'tracked bets only — daily results have no stakes' : 'profit ÷ settled') + '</div></div>' +
     '<div title="Repeat bets on the same play (same game, side, number) count once"><div class="v">' + fmtRec(pr).replace(/ · .*/, '') + '</div><div class="k">Win-loss-push</div><div class="s">' + (pr.plays ? Math.round(pr.w / Math.max(1, pr.w + pr.l) * 100) + '% won · ' + pr.plays + ' plays' : '—') + (pr.cashed ? ' · ' + pr.cashed + ' cashed' : '') + '</div></div>' +
     '<div><div class="v">' + s.n + '</div><div class="k">Bets</div><div class="s">' + s.settledN + ' settled · ' + s.pendingN + ' open</div></div>';
   if (!list.length) { $('#anBreak').innerHTML = ''; return; }
@@ -6285,9 +6330,11 @@ function openTools() {
     '<div class="pick"><span class="grow"><b>Re-check attached games</b><br><span class="muted">Finds bets sitting on a game from a different day than you placed them, and re-attaches when a better match exists.</span></span><button class="btn" id="tSweep">Preview</button></div>' +
     '<div class="pick"><span class="grow"><b>Re-grade automatic results</b><br><span class="muted">Clears auto-graded results and grades them again from the feed. Hand grades are never touched.</span></span><button class="btn" id="tRegrade">Run</button></div>' +
     '<div class="pick"><span class="grow"><b>Recover bets</b><br><span class="muted">Scans the browser\'s daily snapshots (and a backup file if you pick one) for any bet missing from your list.</span></span><button class="btn" id="tRecover">Scan</button><button class="btn" id="tRecoverFile">Scan a file…</button></div>' +
+    '<div class="pick"><span class="grow"><b>Daily results before tracking</b><br><span class="muted">Your up/down for each day before this tracker has bets — adds those days to the profit chart and the net profit total.' + (historyDays().length ? ' ' + historyDays().length + ' days loaded.' : '') + '</span></span><button class="btn" id="tHistory">' + (historyDays().length ? 'Edit' : 'Add') + '</button></div>' +
     '<div class="pick"><span class="grow"><b>Log</b><br><span class="muted">Save failures, feed errors and repairs are written here.</span></span><button class="btn" id="tLog">Show</button></div>' +
     '</div>';
   modalShell('Tools', h, '<button class="btn" data-close>Close</button>');
+  $('#tHistory').onclick = openHistory;
   $('#tRefresh').onclick = function () { closeModal(); refresh({ force: true }); };
   $('#tReparse').onclick = toolReparse;
   $('#tSweep').onclick = toolSweep;
@@ -6303,6 +6350,55 @@ function openTools() {
   $('#tLog').onclick = function () {
     var arr = []; try { arr = JSON.parse(localStorage.getItem(LS_LOG) || '[]'); } catch (e) {}
     modalShell('Log', '<pre class="mono" style="white-space:pre-wrap;max-height:60vh;overflow:auto;margin:0">' + esc(arr.slice().reverse().join('\n') || 'Nothing logged.') + '</pre>', '<button class="btn" data-close>Close</button>', true);
+  };
+}
+// one day per line: a date (1/31/2026, 2026-01-31) then amounts; the LAST amount on the line is that day's result
+// ("1/2/2026  $169.26  $2,379.07" = running total, then the day = +$2,379.07). "-$1,051.51" / "($1,051.51)" = a loss.
+function parseHistory(text) {
+  var out = [], bad = 0;
+  String(text || '').split(/\r?\n/).forEach(function (line) {
+    if (!line.trim()) return;
+    var m = /(\d{4})-(\d{1,2})-(\d{1,2})|(\d{1,2})\/(\d{1,2})\/(\d{2,4})/.exec(line);
+    if (!m) { bad++; return; }
+    var y = m[1] || m[6], mo = m[2] || m[4], d = m[3] || m[5];
+    if (y.length === 2) y = '20' + y;
+    var rest = line.slice(m.index + m[0].length), amts = [], re = /(\(?)\s*(-?)\s*\$?\s*(-?)([\d,]+(?:\.\d+)?)\s*(\)?)/g, a;
+    while ((a = re.exec(rest))) { var v = +a[4].replace(/,/g, ''); if (a[2] || a[3] || (a[1] && a[5])) v = -v; amts.push(v); }
+    if (!amts.length) { bad++; return; }
+    out.push({ day: y + '-' + ('0' + mo).slice(-2) + '-' + ('0' + d).slice(-2), net: Math.round(amts[amts.length - 1] * 100) / 100 });
+  });
+  var seen = {}; out = out.filter(function (r) { if (seen[r.day]) return false; seen[r.day] = 1; return true; }).sort(function (x, y) { return x.day < y.day ? -1 : 1; });
+  return { rows: out, bad: bad };
+}
+function openHistory() {
+  var cur = Array.isArray(state.settings.history) ? state.settings.history : [];
+  var text = cur.map(function (r) { var p = r.day.split('-'); return +p[1] + '/' + +p[2] + '/' + p[0] + '\t' + (r.net < 0 ? '-$' : '$') + Math.abs(r.net).toFixed(2); }).join('\n');
+  modalShell('Daily results before tracking',
+    '<p style="margin-top:0">Paste one day per line — the date, then that day\'s up or down in CAD. If a line has two amounts (running total, then the day), the <b>last</b> one is used.</p>' +
+    '<textarea class="big" id="hText" placeholder="1/1/2026\t-$2,209.81\n1/2/2026\t$2,379.07">' + esc(text) + '</textarea>' +
+    '<p class="muted" id="hSum" style="margin-bottom:0"></p>',
+    '<button class="btn danger" id="hClear">Remove all</button><span style="flex:1"></span><button class="btn" data-close>Cancel</button><button class="btn primary" id="hSave">Save</button>', true);
+  var cut = historyCutoff();
+  function fd(ymd) { return new Date(ymd + 'T12:00:00').toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }); }
+  function summary() {
+    var p = parseHistory($('#hText').value), use = p.rows.filter(function (r) { return !cut || r.day < cut; }), later = p.rows.length - use.length, t = 0;
+    use.forEach(function (r) { t += r.net; });
+    $('#hSum').innerHTML = !p.rows.length ? 'Nothing read yet.' :
+      '<b>' + use.length + ' days</b>' + (use.length ? ' (' + esc(fd(use[0].day)) + ' – ' + esc(fd(use[use.length - 1].day)) + '), total <b class="' + cls(t) + '">' + fmtMoney(t, { sign: 1 }) + '</b>' : '') + '.' +
+      (later ? ' ' + later + ' later day' + (later === 1 ? '' : 's') + ' skipped — the tracker has your bets from ' + esc(fd(cut)) + ' on.' : '') +
+      (p.bad ? ' <span class="neg">' + p.bad + ' line' + (p.bad === 1 ? '' : 's') + ' could not be read.</span>' : '');
+    return p;
+  }
+  $('#hText').addEventListener('input', summary); summary();
+  $('#hSave').onclick = function () {
+    var p = summary(), before = state.settings.history || null;
+    state.settings.history = p.rows.length ? p.rows : null; saveSettings(); closeModal(); renderAll();
+    toast('Saved ' + p.rows.length + ' days of daily results', 'good', { undo: function () { state.settings.history = before; saveSettings(); renderAll(); } });
+  };
+  $('#hClear').onclick = function () {
+    var before = state.settings.history || null;
+    state.settings.history = null; saveSettings(); closeModal(); renderAll();
+    toast('Removed the daily results', '', { undo: function () { state.settings.history = before; saveSettings(); renderAll(); } });
   };
 }
 function toolReparse() {
