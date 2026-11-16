@@ -1939,6 +1939,12 @@ function oneTicketLegs(L, raw, ctx) {
     if (/^(total|btts|draw)$/.test(lg.type) && !lg.team && legs.length && legs[legs.length - 1].team && lg.line != null || (lg.type === 'btts' && !lg.team && legs.length && legs[legs.length - 1].team)) {
       var prevT = legs[legs.length - 1]; lg.team = prevT.team; lg.opponent = prevT.opponent || null; lg.gameOf = true;
     }
+    // "Cooper Kupp: 40 receiving yards, 4 receptions, to score a touchdown": a stat with no player is the same player's
+    var prevP = legs[legs.length - 1];
+    if (lg.type === 'prop' && lg.stat && (!lg.player || lg.needsPlayer) && !lg.team && !lg.opponent && prevP && prevP.type === 'prop' && prevP.player) {
+      lg.player = prevP.player; delete lg.needsPlayer;
+      if (prevP.team) { lg.team = prevP.team; lg.opponent = prevP.opponent || null; }
+    }
     var solid = (lg.type === 'prop' && lg.player && !lg.needsPlayer && lg.stat && lg.line != null) ||
       (/^(spread|team_total)$/.test(lg.type) && lg.team && lg.line != null) || (lg.type === 'ml' && lg.team && /(?<![\w])(?:ml|moneyline|money line|to win)(?![\w])/.test(t)) ||
       (lg.gameOf && (lg.type === 'btts' || lg.line != null)) || (lg.type === 'total' && lg.team && lg.opponent && lg.line != null);
