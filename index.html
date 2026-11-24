@@ -932,6 +932,8 @@ function normalize(raw) {
   s = s.replace(/([a-z])'s(?![a-z])/g, '$1');   // "Sisson's anytime goal" → "Sisson"
   s = s.replace(/(\d)'s(?![a-z])/g, '$1s');     // "u3.5 3's" = threes
   s = s.replace(/\bany[\s-]+time\b/g, 'anytime');   // "any-time goal scorer" / "any time TD"
+  // "Bengals versus Commanders, no touchdown scorer" = no TD in the game (had become an anytime TD on a "player" Commanders)
+  s = s.replace(/\bno (?:touchdowns?|tds?)(?: scorers?| scored| scorer market)?(?: in the game)?\b/g, 'under 0.5 touchdowns');
   // the fight market "KO/TKO/DQ" (also "KO/TKO", "TKO or DQ"…) is one method — the extra words had become the fighter's name
   s = s.replace(/\b(?:ko|tko|knock\s?out|dq|disqualification)(?:\s*(?:\/|,|or|and|&)\s*(?:ko|tko|knock\s?out|dq|disqualification))+\b/g, 'ko');
   s = s.replace(/\bplus\s+(\d{3,5})\b/g, '+$1').replace(/\bminus\s+(\d{3,5})\b/g, '-$1');   // dictated prices: "plus 105" = +105
