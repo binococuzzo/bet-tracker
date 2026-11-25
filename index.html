@@ -1466,6 +1466,12 @@ function parseLeg(seg, ctx) {
     leg.type = 'team_total';
   }
   if (!leg.type) return null;
+  // "Orlando Magic u129.5 total points": one pro basketball team and a number far below any game total = that team's total
+  // (an NBA game total is 190+, a WNBA one 140+; it had been read as the game total with one team named)
+  if (leg.type === 'total' && leg.team && !leg.opponent && leg.line != null && leg.period === 'game') {
+    var tl = leaguesForTeam(leg.team), ln = +leg.line;
+    if ((tl.indexOf('NBA') >= 0 && ln >= 60 && ln < 170) || (tl.indexOf('WNBA') >= 0 && ln >= 50 && ln < 120)) leg.type = 'team_total';
+  }
   return leg;
 }
 
