@@ -708,8 +708,12 @@ var SPORTS = [
       ['rugby/289279', [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]],          // URBA Top 14 (Argentina)
       ['rugby/282', [7, 8]], ['rugby/283', [7, 8]],                 // Olympic 7s (men, women)
     ] },
+  // Tennis: ESPN's ATP + WTA scoreboards (main tours, Grand Slams, WTA 125s — no ATP Challengers / ITF). Each singles match is its
+  // own event; moneyline, set spread, game spread, total sets / games and a player's games grade from the set scores.
+  // No months: only searched when the bet says tennis / ATP / WTA (like golf) — a surname would otherwise match every sport.
+  { key:'TENNIS',label:'Tennis', path:'tennis/atp', paths:[['tennis/atp', null], ['tennis/wta', null]], kind:'tennis',
+    re:/\b(tennis|atp|wta|australian open|wimbledon|roland garros|french open|davis cup|billie jean king cup)\b/ },
   // Graded by hand — ESPN's free feed can't settle these
-  { key:'TENNIS',label:'Tennis', path:null, kind:'tennis',  re:/\b(tennis|atp|wta)\b/ },
   { key:'MOTOR', label:'Motorsport', path:null, kind:'motor', re:/\b(f1|formula 1|formula one|nascar|indycar|motogp)\b/ },
   { key:'BOXING',label:'Boxing', path:null, kind:'boxing',  re:/\bboxing\b/ },
   { key:'CRICKET',label:'Cricket',path:null, kind:'cricket',re:/\b(cricket|ipl)\b/ },
@@ -934,6 +938,9 @@ function normalize(raw) {
   s = s.replace(/\bany[\s-]+time\b/g, 'anytime');   // "any-time goal scorer" / "any time TD"
   // "Bengals versus Commanders, no touchdown scorer" = no TD in the game (had become an anytime TD on a "player" Commanders)
   s = s.replace(/\bno (?:touchdowns?|tds?)(?: scorers?| scored| scorer market)?(?: in the game)?\b/g, 'under 0.5 touchdowns');
+  // "Zverev to beat Jodar" / "Jones to beat Miocic": read like "Zverev over Jodar" — people's names aren't known teams, so the two
+  // names had been glued into one ("zverev jodar") and the match picked on the wrong player
+  s = s.replace(/\bto beat\s+(?=[a-z])/g, 'over ');
   // the fight market "KO/TKO/DQ" (also "KO/TKO", "TKO or DQ"…) is one method — the extra words had become the fighter's name
   s = s.replace(/\b(?:ko|tko|knock\s?out|dq|disqualification)(?:\s*(?:\/|,|or|and|&)\s*(?:ko|tko|knock\s?out|dq|disqualification))+\b/g, 'ko');
   s = s.replace(/\bplus\s+(\d{3,5})\b/g, '+$1').replace(/\bminus\s+(\d{3,5})\b/g, '-$1');   // dictated prices: "plus 105" = +105
@@ -1840,6 +1847,15 @@ function parse(text, opts) {
   bet.stakeInput = stakeInput;
   // golf "A vs B": a head-to-head tournament matchup — A has to finish ahead of B
   if (bet.sport === 'GOLF') legs.forEach(function (l) { if (l.type === 'ml' && l.team && l.opponent) l.matchup = true; });
+  // "Zverev vs Jodar Zverev ML": the pick said again after the matchup lands on the opponent ("jodar zverev") — take it off
+  // (people only — "Southern/Texas Southern" is two real schools)
+  if (/^(TENNIS|UFC|BOXING)$/.test(bet.sport || '')) legs.forEach(function (l) {
+    if (!/^(ml|spread)$/.test(l.type) || !l.team || !l.opponent || l.opponent.length <= l.team.length) return;
+    if (String(raw).toLowerCase().split(l.team).length < 3) return;   // the pick has to be written twice
+    var tail = ' ' + l.team;   // the whole pick ("Iowa State vs Kansas State" keeps its "State")
+    if (l.opponent.slice(-tail.length) === tail) l.opponent = l.opponent.slice(0, -tail.length).trim();
+  });
+  if (bet.sport === 'TENNIS') legs.forEach(function (l) { tennisLeg(l, raw); });
 
   // confidence
   var c = 1;
@@ -1889,12 +1905,39 @@ function defaultLeagueForKind(kind, today) {
   return inSeason.length ? inSeason[0].key : (pro[kind] || null);
 }
 
+/* Tennis: "Kubler +1.5 sets", "Sinner -3.5 games", "o22.5 games", "over 2.5 sets". "sets" ends up glued to the name (games is a
+   filler word), so take it off and remember the unit. Not said: a ±1.5 spread is sets, any other spread games; a total of 5.5 or
+   less is sets, more is games. One player with a games total under 16 ("Sinner o10.5 games") = his own games (team total). */
+function tennisUnitOf(l) {
+  if (l.tennisUnit) return l.tennisUnit;
+  var x = Math.abs(+l.line);
+  if (l.type === 'spread') return x === 1.5 ? 'sets' : 'games';
+  if (l.type === 'total') return x <= 5.5 ? 'sets' : 'games';
+  return 'games';
+}
+function tennisLeg(l, raw) {
+  var said = null;
+  ['team', 'opponent'].forEach(function (k) {
+    if (!l[k]) return;
+    var v = l[k].replace(/\s*\b(sets?|games?)\b(?:\s+(?:spread|handicap|line|total))?\s*/g, function (m, w) { said = /^s/.test(w) ? 'sets' : 'games'; return ' '; });
+    v = v.replace(/\s*\b(?:spread|handicap)\b\s*/g, ' ').replace(/\s+/g, ' ').trim();
+    l[k] = v || null;
+  });
+  if (!/^(spread|total|team_total)$/.test(l.type)) return;
+  var r = String(raw || '');
+  if (!said && /\bsets?\b/i.test(r) && !/\bgames?\b/i.test(r)) said = 'sets';
+  if (!said && /\bgames?\b/i.test(r) && !/\bsets?\b/i.test(r)) said = 'games';
+  l.tennisUnit = said || tennisUnitOf(l);
+  if (l.type === 'total' && l.team && !l.opponent && l.tennisUnit === 'games' && +l.line < 16) l.type = 'team_total';
+}
+
 var PERIOD_NAMES = { game: '', '1h': '1st half', '2h': '2nd half', '1q': '1st qtr', '2q': '2nd qtr', '3q': '3rd qtr', '4q': '4th qtr',
   '1p': '1st period', '2p': '2nd period', '3p': '3rd period', f5: 'first 5', i1: '1st inning' };
 function fmtLine(x) { if (x == null) return ''; return (x > 0 ? '+' : '') + x; }
 function cap(s) { return s ? String(s).replace(/\b([a-z])/g, function (m, c) { return c.toUpperCase(); }) : ''; }
 function describeLeg(l) {
   if (!l) return '';
+  if (l.tennisUnit && /^(spread|total|team_total)$/.test(l.type)) { var u = l.tennisUnit; l.tennisUnit = null; var d = describeLeg(l); l.tennisUnit = u; return d + ' ' + u; }
   var per = PERIOD_NAMES[l.period || 'game'] ? ' (' + PERIOD_NAMES[l.period] + ')' : '';
   var team = cap(l.teamName || l.team || '');
   switch (l.type) {
@@ -2057,7 +2100,7 @@ var api = {
   STAT_LABEL: STAT_LABEL, DEFAULTS: DEFAULTS, SEASON: function () { return SEASON; }, PERIOD_NAMES: PERIOD_NAMES,
   configure: configure, parse: parse, parseMany: parseMany, betsInText: betsInText, readTelegram: readTelegram, normalize: normalize, resolveSource: resolveSource, resolveBook: resolveBook,
   isTeamish: isTeamish, leaguesForTeam: leaguesForTeam, decToAm: decToAm, amToDec: amToDec, toWinFor: toWinFor,
-  describeLeg: describeLeg, statKind: statKind, defaultLeagueForKind: defaultLeagueForKind, addDays: addDays, dow: dow,
+  describeLeg: describeLeg, tennisUnitOf: tennisUnitOf, statKind: statKind, defaultLeagueForKind: defaultLeagueForKind, addDays: addDays, dow: dow,
   lev: lev, titleCase: titleCase, FILLER: FILLER,
 };
 if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.P = api;
@@ -2384,6 +2427,7 @@ function normScoreboard(json, league, kind) {
       });
       return;
     }
+    if (kind === 'tennis') { tennisMatches(ev, league).forEach(function (m) { out.push(m); }); return; }
     if (kind === 'golf') {
       var gc = comps[0];
       if (!gc) return;
@@ -2428,6 +2472,96 @@ function normScoreboard(json, league, kind) {
     });
   });
   return out;
+}
+
+/* ---------- tennis ----------
+   ESPN's tennis scoreboard is one event per tournament, matches inside groupings (Men's Singles, Women's Doubles…). Each singles
+   match becomes its own event: away / home = ESPN's two players, score = sets won, lines = games in each set. Doubles are left out
+   (a pair's surname would steal a singles bet), so doubles grade by hand. */
+function tennisSide(c) {
+  var a = c.athlete || {}, nm = a.displayName || a.fullName || '', sh = a.shortName || nm;
+  var last = sh.replace(/^(?:[A-Z][a-z]?\.\s*)+/, '') || nm.split(' ').slice(1).join(' ') || nm;
+  var ls = c.linescores || [];
+  return {
+    id: String(c.id || ''), abbr: last, name: nm, short: sh, loc: '', nick: last, logo: (a.flag && a.flag.href) || '', color: '',
+    score: ls.length ? ls.filter(function (l) { return l.winner === true; }).length : null,
+    lines: ls.map(function (l) { return num(l.value); }), tb: ls.map(function (l) { return l.tiebreak != null ? num(l.tiebreak) : null; }),
+    winner: !!c.winner,
+  };
+}
+function tennisMatches(ev, league) {
+  var out = [];
+  (ev.groupings || []).forEach(function (g) {
+    var gname = (g.grouping && g.grouping.displayName) || '';
+    if (!/singles/i.test(gname)) return;
+    (g.competitions || []).forEach(function (comp) {
+      var cs = comp.competitors || [];
+      if (cs.length !== 2 || !cs[0].athlete || !cs[1].athlete) return;
+      var hc = cs.filter(function (c) { return c.homeAway === 'home'; })[0] || cs[0], ac = hc === cs[0] ? cs[1] : cs[0];
+      var h = tennisSide(hc), a = tennisSide(ac);
+      if (!h.name || !a.name || /^tbd$/i.test(h.name) || /^tbd$/i.test(a.name)) return;   // a later round, players not known yet
+      var st = comp.status || {}, sname = (st.type && st.type.name) || '', sdet = (st.type && st.type.shortDetail) || '';
+      var sets = [];
+      for (var i = 0; i < Math.max(h.lines.length, a.lines.length); i++) {
+        if (a.lines[i] == null || h.lines[i] == null) continue;
+        var tb = a.tb[i] != null && h.tb[i] != null ? '(' + Math.min(a.tb[i], h.tb[i]) + ')' : '';
+        sets.push(a.lines[i] + '-' + h.lines[i] + tb);
+      }
+      var retired = /RETIRED/.test(sname), walkover = /WALKOVER/.test(sname), status = mapStatus(st), setTxt = sets.join(' ');
+      var detail = walkover ? 'Walkover' : status === 'in' ? (setTxt ? setTxt + ' · ' : '') + (sdet || 'Live') : status === 'final' && setTxt ? setTxt + (retired ? ' ret.' : '') : sdet;
+      out.push({
+        id: String(comp.id), parentId: String(ev.id), league: league, kind: 'tennis', date: comp.date || comp.startDate || ev.date,
+        name: a.name + ' vs ' + h.name, short: a.abbr + ' v ' + h.abbr, venue: ev.name || '', round: (comp.round && comp.round.displayName) || '',
+        status: status, statusName: sname, period: st.period || null, detail: detail,
+        home: h, away: a, winner: h.winner ? 'home' : a.winner ? 'away' : null, retired: retired, walkover: walkover, sets: setTxt,
+      });
+    });
+  });
+  return out;
+}
+// same rule as the parser's: a ±1.5 spread counts sets, other spreads games; a total of 5.5 or less is sets
+function tennisUnitOf(l) {
+  if (l.tennisUnit) return l.tennisUnit;
+  var x = Math.abs(+l.line);
+  if (l.type === 'spread') return x === 1.5 ? 'sets' : 'games';
+  if (l.type === 'total') return x <= 5.5 ? 'sets' : 'games';
+  return 'games';
+}
+function tennisCount(side, unit) {
+  if (unit === 'sets') return side.score || 0;
+  return (side.lines || []).reduce(function (s, g) { return s + (g || 0); }, 0);
+}
+function gradeTennis(leg, ev) {
+  var t = leg.type, per = leg.period || 'game', unit = tennisUnitOf(leg);
+  if (!/^(ml|spread|total|team_total)$/.test(t)) return ev.status === 'final' ? { result: null, note: 'this tennis market is graded by hand', review: true } : null;
+  if (per !== 'game') return ev.status === 'final' ? { result: null, note: 'set bets are graded by hand', review: true } : null;
+  var sd = t === 'total' ? null : sideOf(leg, ev);
+  if (t !== 'total' && !sd) return null;
+  var other = sd === 'home' ? 'away' : 'home';
+  if (ev.status === 'in') {
+    // games only go up: an over that's already past the line has won, the under has lost
+    if (!/total/.test(t) || unit !== 'games' || leg.line == null) return null;
+    var live = t === 'total' ? tennisCount(ev.home, 'games') + tennisCount(ev.away, 'games') : tennisCount(ev[sd], 'games');
+    if (!(live > +leg.line)) return null;
+    return { result: leg.ou === 'under' ? 'loss' : 'win', actual: live, note: 'went over ' + leg.line + ' games during the match (' + ev.detail + ')' };
+  }
+  if (ev.status !== 'final') return null;
+  if (ev.walkover) return { result: 'void', note: 'walkover — the match was never played', review: true };
+  if (ev.retired) return { result: null, note: 'a player retired (' + ev.sets + ') — books differ, grade by hand', review: true };
+  var res, actual;
+  if (t === 'ml') {
+    if (!ev.winner) return null;
+    res = ev.winner === sd ? 'win' : 'loss'; actual = ev.sets;
+  } else if (t === 'spread') {
+    if (leg.line == null) return null;
+    var my = tennisCount(ev[sd], unit), their = tennisCount(ev[other], unit);
+    res = cmp(my - their + +leg.line); actual = my + '-' + their + ' ' + unit;
+  } else {
+    if (leg.line == null) return null;
+    var tot = t === 'total' ? tennisCount(ev.home, unit) + tennisCount(ev.away, unit) : tennisCount(ev[sd], unit);
+    res = cmp(leg.ou === 'under' ? +leg.line - tot : tot - +leg.line); actual = tot;
+  }
+  return { result: res, actual: actual, note: ev.sets ? 'sets ' + ev.sets : null };
 }
 
 /* ---------- golf: head-to-head tournament matchups ----------
@@ -2797,6 +2931,9 @@ function rankOf(c, o) {
   var st = c.ev.status;
   // live now is the best guess only for a bet placed around now — not one logged days later
   if (st === 'in' && (o.now == null || c.startMs - o.now < 12 * 3600e3)) return 1;
+  // tennis players play day after day: a match that began 4+ hours before the bet was placed was most likely over already —
+  // the bet is on the next one (Monnet won on Nov 25 and played again on the 27th). Still used when it's the only match.
+  if (c.ev.kind === 'tennis' && st === 'final' && o.now != null && o.now - c.startMs > 4 * 3600e3) return 7;
   if (c.day === o.anchor && st === 'scheduled') return 2;
   if (c.day === o.anchor && st === 'final') return 3;
   if (o.placedHour != null && o.placedHour < 6 && c.day === prevDay(o.anchor) && c.hour >= 17) return 4;
@@ -2810,7 +2947,7 @@ function rankCandidates(cands, o) {
   list.sort(function (a, b) {
     if (a.rank !== b.rank) return a.rank - b.rank;
     if ((b.score || 0) !== (a.score || 0)) return (b.score || 0) - (a.score || 0);
-    if (a.rank === 6) return b.startMs - a.startMs;
+    if (a.rank >= 6) return b.startMs - a.startMs;
     return a.startMs - b.startMs;
   });
   return list;
@@ -2888,6 +3025,7 @@ function decidedLive(leg, ev) {
 function gradeLeg(leg, ev, ctx) {
   if (!ev || !leg) return null;
   if (ev.status === 'postponed' || ev.status === 'cancelled') return { result: null, note: 'game ' + ev.status + ' — check the book', review: true };
+  if (ev.kind === 'tennis') return gradeTennis(leg, ev);
   if (ev.status === 'in') return decidedLive(leg, ev);
   if (ev.status !== 'final') return null;
   if (ev.kind === 'golf') return gradeGolf(leg, ev);
@@ -4333,6 +4471,7 @@ function board(key, day, opts) {
       events.forEach(function (e) {
         evIndex[e.id] = e;
         if (e.field) { golfPairsFor(e); return; }
+        if (e.kind === 'tennis') return;
         [e.home, e.away].forEach(function (t) { [t.name, t.short, t.nick, t.loc].forEach(function (n) { if (n) teamIndex[G.nameKey(n)] = 1; }); });
       });
       return entry;
@@ -5363,7 +5502,7 @@ function slWhen(ev) {
   var d = new Date(ev.date), sc = ev.home.score != null && ev.away.score != null;
   var score = sc ? esc((ev.away.abbr || ev.away.short) + ' ' + ev.away.score + ' – ' + ev.home.score + ' ' + (ev.home.abbr || ev.home.short)) : '';
   if (ev.status === 'in') return '<span class="sl-when live">' + score + (score ? ' · ' : '') + esc(ev.detail || 'Live') + '</span>';
-  if (ev.status === 'final') return '<span class="sl-when final">Final' + (score ? ' · ' + score : '') + '</span>';
+  if (ev.status === 'final') return '<span class="sl-when final">Final' + (score ? ' · ' + score : '') + (ev.kind === 'tennis' && ev.detail ? ' (' + esc(ev.detail) + ')' : '') + '</span>';
   if (ev.status === 'postponed' || ev.status === 'cancelled') return '<span class="sl-when final">' + esc(ev.status) + '</span>';
   if (isNaN(d)) return '';
   return '<span class="sl-when">' + esc(slTime(d)) + '</span>';
@@ -5372,8 +5511,9 @@ function slSide(l, ev) { return ev && l.side && ev[l.side] ? ev[l.side] : null; 
 function slLegText(l, ev) {
   var per = l.period && l.period !== 'game' ? ' (' + (P.PERIOD_NAMES[l.period] || l.period) + ')' : '';
   var s = slSide(l, ev), ab = s ? (s.abbr || s.short) : '';
-  if (l.type === 'total' && ev) return (l.ou === 'under' ? 'Under ' : 'Over ') + l.line + per;
-  if (ab && l.type === 'spread') return ab + ' ' + (+l.line === 0 ? 'PK' : (l.line > 0 ? '+' : '') + l.line) + per;
+  var tu = l.tennisUnit && /^(spread|total|team_total)$/.test(l.type) ? ' ' + l.tennisUnit : '';
+  if (l.type === 'total' && ev) return (l.ou === 'under' ? 'Under ' : 'Over ') + l.line + tu + per;
+  if (ab && l.type === 'spread') return ab + ' ' + (+l.line === 0 ? 'PK' : (l.line > 0 ? '+' : '') + l.line) + tu + per;
   if (ab && l.type === 'ml' && !(l.opponent && (l.matchup || l.eventLeague === 'GOLF'))) return ab + ' ML' + per;
   if (ab && l.type === 'dnb') return ab + ' DNB' + per;
   return legText(l);
@@ -5394,7 +5534,7 @@ function slGamesHtml(groups) {
       var kind = ev.kind || (sportByKey(l0.eventLeague) || {}).kind;
       var vs = /^(football|basketball|baseball|hockey)$/.test(kind) ? '@' : 'vs';
       head = '<span class="sl-team">' + slLogo(ev.away) + esc(ev.away.abbr || ev.away.short || ev.away.name) + '</span><span class="sl-at">' + vs + '</span><span class="sl-team">' + slLogo(ev.home) + esc(ev.home.abbr || ev.home.short || ev.home.name) + '</span>' +
-        '<span class="sl-lg">' + esc(sportLabel(l0.eventLeague)) + (kind === 'golf' && ev.venue ? ' · ' + esc(ev.venue) : '') + '</span><span class="rule"></span>' + slWhen(ev);
+        '<span class="sl-lg">' + esc(sportLabel(l0.eventLeague)) + ((kind === 'golf' || kind === 'tennis') && ev.venue ? ' · ' + esc(ev.venue) : '') + '</span><span class="rule"></span>' + slWhen(ev);
     } else if (g.key === 'none') {
       head = '<span class="sl-team">Bets without a game attached</span><span class="sl-lg">no feed has these games · grade them by hand</span><span class="rule"></span>';
     } else {
@@ -6546,7 +6686,7 @@ function openHelp() {
     '<div><b>Change many at once</b> — tick bets in the table (the box in the header ticks everything the filters and search show), then set a tipster and/or book in the bar that appears and press <b>Apply</b>. Undo is on the message that follows.</div>' +
     '</div><div class="section-title">Examples</div><div class="helpgrid">' + ex.map(function (e) { return '<div><code>' + esc(e) + '</code></div>'; }).join('') + '</div>' +
     '<div class="section-title">Dictation</div><p>Any dictation that types into a text box works — the tracker only ever sees text. In Windows press <b>Win+H</b> in the box and talk. Wispr Flow works the same way (hold its key, speak, release). If dictation keeps mishearing a tipster, add that spelling in Settings → Tipsters.</p>' +
-    '<div class="section-title">What happens next</div><p>It finds the game on ESPN, shows the live score, and grades itself when the game is final. Props are graded from the box score. Golf head-to-head matchups (A vs B) grade from the PGA Tour leaderboard. Rugby union full-game spreads, totals and moneylines grade too (every ESPN competition — NPC, URC, Premiership, Top 14, Super Rugby, tests… — plus the World Rugby feed for Pro D2, the Nations Cup tests, WXV, the English Championship and more, where first halves grade as well). Other rugby halves, rugby league, tennis, other golf bets, motorsport and futures are graded by you — pick the result in the table. Anything you grade by hand is final and never overwritten.</p>' +
+    '<div class="section-title">What happens next</div><p>It finds the game on ESPN, shows the live score, and grades itself when the game is final. Props are graded from the box score. Golf head-to-head matchups (A vs B) grade from the PGA Tour leaderboard. Rugby union full-game spreads, totals and moneylines grade too (every ESPN competition — NPC, URC, Premiership, Top 14, Super Rugby, tests… — plus the World Rugby feed for Pro D2, the Nations Cup tests, WXV, the English Championship and more, where first halves grade as well). Tennis singles on the ATP and WTA tours (Grand Slams, tour events, WTA 125s) grade moneylines, set and game spreads and totals — start the bet with <code>tennis</code>, <code>ATP</code> or <code>WTA</code>. Other rugby halves, rugby league, ATP Challenger / ITF tennis and doubles, other golf bets, motorsport and futures are graded by you — pick the result in the table. Anything you grade by hand is final and never overwritten.</p>' +
     '<div class="section-title">Keeping your bets safe</div><p>Your bets live in this browser <i>and</i> — once you link it — an auto-save file. The chip at the top right always says which. Press <b>Backup</b> now and then too; the file it downloads can be put back with <b>Restore</b>.</p>';
   modalShell('How to use it', h, '<button class="btn primary" data-close>Got it</button>', true);
 }
